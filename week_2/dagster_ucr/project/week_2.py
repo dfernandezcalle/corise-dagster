@@ -1,30 +1,54 @@
 from typing import List
+from unicodedata import name
 
 from dagster import In, Nothing, Out, ResourceDefinition, graph, op
 from dagster_ucr.project.types import Aggregation, Stock
 from dagster_ucr.resources import mock_s3_resource, redis_resource, s3_resource
 
 
-@op
-def get_s3_data():
-    pass
+@op(
+    config_schema={"s3_key": str},
+    required_resource_keys={"s3"},
+    out={"stocks": Out(dagster_type=List[Stock])},
+    tags={"kind": "s3"},
+    description="Get a list of stocks from an S3 file",
+)
+def get_s3_data(context):
+    return ([Stock.from_list(i)
+         for i in context.resources.s3.get_data(
+            context.op_config["s3_key"])])
 
 
-@op
-def process_data():
-    # Use your op from week 1
-    pass
+@op(
+    ins={'stockList': In(dagster_type=List[Stock])},
+    out={"agg": Out(dagster_type=Aggregation)},
+    description="Process S3 data: determine the Stock with the greatest high value from a List of Stock",
+    tags={"kind": "s3"}
+)
+def process_data(stockList: List[Stock]) -> Aggregation:
+    aggMax = max(stockList, key=lambda s: s.high)
+    return Aggregation(
+        date=aggMax.date,
+        high=aggMax.high
+    )
 
 
-@op
-def put_redis_data():
-    pass
+@op(
+    required_resource_keys={"redis"},
+    ins={'agg': In(dagster_type=Aggregation)},
+    description="Persist data into Redis: receives an aggregation of data and persists it to Redis",
+    tags={"kind": "redis"}
+)
+def put_redis_data(context, agg: Aggregation):
+    context.resources.redis.put_data(
+        name=agg.date.strftime("%m/%d/%Y"),
+        value=agg.high
+    )
 
 
 @graph
 def week_2_pipeline():
-    # Use your graph from week 1
-    pass
+    put_redis_data(process_data(get_s3_data()))
 
 
 local = {
@@ -54,7 +78,8 @@ docker = {
 local_week_2_pipeline = week_2_pipeline.to_job(
     name="local_week_2_pipeline",
     config=local,
-    resource_defs={"s3": mock_s3_resource, "redis": ResourceDefinition.mock_resource()},
+    resource_defs={"s3": mock_s3_resource,
+                   "redis": ResourceDefinition.mock_resource()},
 )
 
 docker_week_2_pipeline = week_2_pipeline.to_job(
